@@ -284,7 +284,11 @@ func (r *dhtQueryRunner) queryPeer(proc process.Process, p peer.ID) {
 	// finally, run the query against this peer
 	res, err := r.query.qfunc(ctx, p)
 
-	r.peersQueried.Add(p)
+	if err == nil {
+		// Make sure we only return DHT peers that actually respond to
+		// the query.
+		r.peersQueried.Add(p)
+	}
 
 	if err != nil {
 		logger.Debugf("ERROR worker for: %v %v", p, err)
