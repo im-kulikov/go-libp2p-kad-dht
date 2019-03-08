@@ -171,6 +171,12 @@
       "hash": "QmW1UQYrsBotoorzgBcQ3HVj5RzZUzB6g1vQwnNfUuCVdN",
       "name": "xerrors",
       "version": "0.0.2"
+    },
+    {
+      "author": "whyrusleeping",
+      "hash": "QmUusaX99BZoELh7dmPgirqRQ1FAmMnmnBn3oiqDFGBUSc",
+      "name": "go-keyspace",
+      "version": "1.0.0"
     }
   ],
   "gxVersion": "0.4.0",
@@ -180,3 +186,4 @@
   "releaseCmd": "git commit -a -m \"gx publish $VERSION\"",
   "version": "4.4.32"
 }
+
