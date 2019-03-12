@@ -77,31 +77,27 @@ func (dht *IpfsDHT) PutValue(ctx context.Context, key string, value []byte, opts
 		return err
 	}
 
-	pchan, err := dht.GetClosestPeers(ctx, key)
+	query := dht.newClosestPeersQuery(ctx, key)
+
+	tablepeers := dht.routingTable.NearestPeers(kb.ConvertKey(key), AlphaValue)
+	if len(tablepeers) == 0 {
+		return kb.ErrLookupFailure
+	}
+
+	res, err := query.Recurse(ctx, tablepeers)
 	if err != nil {
 		return err
 	}
 
-	wg := sync.WaitGroup{}
-	for p := range pchan {
-		wg.Add(1)
-		go func(p peer.ID) {
-			ctx, cancel := context.WithCancel(ctx)
-			defer cancel()
-			defer wg.Done()
-			notif.PublishQueryEvent(ctx, &notif.QueryEvent{
-				Type: notif.Value,
-				ID:   p,
-			})
+	_, err = res.FinishWith(ctx, func(ctx context.Context, p peer.ID) error {
+		notif.PublishQueryEvent(ctx, &notif.QueryEvent{
+			Type: notif.Value,
+			ID:   p,
+		})
 
-			err := dht.putValueToPeer(ctx, p, rec)
-			if err != nil {
-				logger.Debugf("failed putting value to peer: %s", err)
-			}
-		}(p)
-	}
-	wg.Wait()
-	return nil
+		return dht.putValueToPeer(ctx, p, rec)
+	})
+	return err
 }
 
 // RecvdVal stores a value and the peer from which we got the value.
@@ -390,7 +386,15 @@ func (dht *IpfsDHT) Provide(ctx context.Context, key cid.Cid, brdcst bool) (err 
 		return nil
 	}
 
-	peers, err := dht.GetClosestPeers(ctx, key.KeyString())
+	dhtKey := key.KeyString()
+
+	tablepeers := dht.routingTable.NearestPeers(kb.ConvertKey(dhtKey), AlphaValue)
+	if len(tablepeers) == 0 {
+		return kb.ErrLookupFailure
+	}
+
+	query := dht.newClosestPeersQuery(ctx, dhtKey)
+	res, err := query.Recurse(ctx, tablepeers)
 	if err != nil {
 		return err
 	}
@@ -400,20 +404,10 @@ func (dht *IpfsDHT) Provide(ctx context.Context, key cid.Cid, brdcst bool) (err 
 		return err
 	}
 
-	wg := sync.WaitGroup{}
-	for p := range peers {
-		wg.Add(1)
-		go func(p peer.ID) {
-			defer wg.Done()
-			logger.Debugf("putProvider(%s, %s)", key, p)
-			err := dht.sendMessage(ctx, p, mes)
-			if err != nil {
-				logger.Debug(err)
-			}
-		}(p)
-	}
-	wg.Wait()
-	return nil
+	_, err = res.FinishWith(ctx, func(ctx context.Context, p peer.ID) error {
+		return dht.sendMessage(ctx, p, mes)
+	})
+	return err
 }
 func (dht *IpfsDHT) makeProvRecord(skey cid.Cid) (*pb.Message, error) {
 	pi := pstore.PeerInfo{

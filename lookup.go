@@ -62,10 +62,30 @@ func (dht *IpfsDHT) GetClosestPeers(ctx context.Context, key string) (<-chan pee
 
 	out := make(chan peer.ID, KValue)
 
+	query := dht.newClosestPeersQuery(ctx, key)
+
+	go func() {
+		defer close(out)
+		defer e.Done()
+		// run it!
+		res, err := query.Run(ctx, tablepeers)
+		if err != nil {
+			logger.Debugf("closestPeers query run error: %s", err)
+		}
+
+		for _, p := range res {
+			out <- p
+		}
+	}()
+
+	return out, nil
+}
+
+func (dht *IpfsDHT) newClosestPeersQuery(ctx context.Context, key string) *dhtQuery {
 	// since the query doesnt actually pass our context down
 	// we have to hack this here. whyrusleeping isnt a huge fan of goprocess
 	parent := ctx
-	query := dht.newQuery(key, func(ctx context.Context, p peer.ID) (*dhtQueryResult, error) {
+	return dht.newQuery(key, func(ctx context.Context, p peer.ID) (*dhtQueryResult, error) {
 		// For DHT query command
 		notif.PublishQueryEvent(parent, &notif.QueryEvent{
 			Type: notif.SendingQuery,
@@ -89,19 +109,4 @@ func (dht *IpfsDHT) GetClosestPeers(ctx context.Context, key string) (<-chan pee
 		return &dhtQueryResult{closerPeers: peers}, nil
 	})
 
-	go func() {
-		defer close(out)
-		defer e.Done()
-		// run it!
-		res, err := query.Run(ctx, tablepeers)
-		if err != nil {
-			logger.Debugf("closestPeers query run error: %s", err)
-		}
-
-		for _, p := range res {
-			out <- p
-		}
-	}()
-
-	return out, nil
 }

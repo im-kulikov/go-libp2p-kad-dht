@@ -24,21 +24,26 @@ var maxQueryConcurrency = AlphaValue
 
 type dhtQuery struct {
 	dht         *IpfsDHT
-	key         string    // the key we're querying for
-	qfunc       queryFunc // the function to execute per peer
-	concurrency int       // the concurrency parameter
+	key         string      // the key we're querying for
+	rfunc       recurseFunc // the function to execute per peer
+	concurrency int         // the concurrency parameter
 }
 
 type dhtQueryResult struct {
 	closerPeers []*pstore.PeerInfo // *
 }
 
+type dhtQueryRecurseResult struct {
+	query                 *dhtQuery
+	seen, queried, failed []peer.ID
+}
+
 // constructs query
-func (dht *IpfsDHT) newQuery(k string, f queryFunc) *dhtQuery {
+func (dht *IpfsDHT) newQuery(k string, f recurseFunc) *dhtQuery {
 	return &dhtQuery{
 		key:         k,
 		dht:         dht,
-		qfunc:       f,
+		rfunc:       f,
 		concurrency: maxQueryConcurrency,
 	}
 }
@@ -48,10 +53,18 @@ func (dht *IpfsDHT) newQuery(k string, f queryFunc) *dhtQuery {
 // - the value
 // - a list of peers potentially better able to serve the query
 // - an error
-type queryFunc func(context.Context, peer.ID) (*dhtQueryResult, error)
+type recurseFunc func(context.Context, peer.ID) (*dhtQueryResult, error)
 
-// Run runs the query at hand. pass in a list of peers to use first.
 func (q *dhtQuery) Run(ctx context.Context, peers []peer.ID) ([]peer.ID, error) {
+	res, err := q.Recurse(ctx, peers)
+	if err != nil || res == nil {
+		return nil, err
+	}
+	return res.Finish(ctx)
+}
+
+// Recurse runs the recurse step of the query. Pass in a list of peers to use first.
+func (q *dhtQuery) Recurse(ctx context.Context, peers []peer.ID) (*dhtQueryRecurseResult, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -62,13 +75,13 @@ func (q *dhtQuery) Run(ctx context.Context, peers []peer.ID) ([]peer.ID, error) 
 	defer cancel()
 
 	runner := newQueryRunner(q)
-	return runner.Run(ctx, peers)
+	return runner.Recurse(ctx, peers)
 }
 
 type dhtQueryRunner struct {
 	query          *dhtQuery          // query to run
 	peersSeen      *pset.PeerSet      // all peers seen. prevent querying same peer 2x
-	peersSuceeded  *pset.PeerSet      // all peers successfully queried.
+	peersQueried   *pset.PeerSet      // all peers successfully queried.
 	peersFailed    *pset.PeerSet      // all peers not successfully queried.
 	aPeers         *kpeerset.KPeerSet // k best peers queried.
 	peersDialed    *dialQueue         // peers we have dialed to
@@ -94,8 +107,8 @@ func newQueryRunner(q *dhtQuery) *dhtQueryRunner {
 		query:          q,
 		peersRemaining: todoctr.NewSyncCounter(),
 		peersSeen:      pset.New(),
+		peersQueried:   pset.New(),
 		peersFailed:    pset.New(),
-		peersSuceeded:  pset.New(),
 		aPeers:         kpeerset.New(AlphaValue, q.key),
 		rateLimit:      make(chan struct{}, q.concurrency),
 		peersToQuery:   peersToQuery,
@@ -115,7 +128,7 @@ func newQueryRunner(q *dhtQuery) *dhtQueryRunner {
 	return r
 }
 
-func (r *dhtQueryRunner) Run(ctx context.Context, peers []peer.ID) ([]peer.ID, error) {
+func (r *dhtQueryRunner) Recurse(ctx context.Context, peers []peer.ID) (*dhtQueryRecurseResult, error) {
 	r.log = logger
 	r.runCtx = ctx
 
@@ -166,31 +179,56 @@ func (r *dhtQueryRunner) Run(ctx context.Context, peers []peer.ID) ([]peer.ID, e
 		defer r.RUnlock()
 		err = r.runCtx.Err()
 	}
-	if err != nil {
-		return nil, err
-	}
-	return r.getClosest(ctx)
+	return &dhtQueryRecurseResult{
+		query:   r.query,
+		seen:    r.peersSeen.Peers(),
+		queried: r.peersQueried.Peers(),
+		failed:  r.peersFailed.Peers(),
+	}, err
 }
 
-func (r *dhtQueryRunner) getClosest(ctx context.Context) ([]peer.ID, error) {
+func (r *dhtQueryRecurseResult) Finish(ctx context.Context) ([]peer.ID, error) {
+	return r.FinishWith(ctx, nil)
+}
+
+func (r *dhtQueryRecurseResult) FinishWith(ctx context.Context, fn func(context.Context, peer.ID) error) ([]peer.ID, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Get a sorted list of peers to query.
-	seen := r.peersSeen.Peers()
-	notFailed := make([]peer.ID, 0, len(seen))
-	for _, p := range seen {
-		if r.peersFailed.Contains(p) {
+	failed := make(map[peer.ID]bool, len(r.failed))
+	for _, p := range r.failed {
+		failed[p] = true
+	}
+
+	succeeded := make(map[peer.ID]bool, len(r.queried))
+	for _, p := range r.queried {
+		if !failed[p] {
+			succeeded[p] = true
+		}
+	}
+
+	closest := make([]peer.ID, 0, len(r.seen))
+	for _, p := range r.seen {
+		if failed[p] {
 			continue
 		}
-		notFailed = append(notFailed, p)
+		closest = append(closest, p)
 	}
-	closest := kb.SortClosestPeers(notFailed, kb.ConvertKey(r.query.key))
+	closest = kb.SortClosestPeers(closest, kb.ConvertKey(r.query.key))
 
 	// Query them.
 	bucket := make([]peer.ID, 0, KValue)
 	workQ := make(chan peer.ID)
 	resultQ := make(chan peer.ID, KValue)
+
+	newQuery := fn != nil
+	if !newQuery {
+		fn = func(ctx context.Context, p peer.ID) error {
+			_, err := r.query.rfunc(ctx, p)
+			return err
+		}
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(KValue)
@@ -198,8 +236,7 @@ func (r *dhtQueryRunner) getClosest(ctx context.Context) ([]peer.ID, error) {
 		go func() {
 			defer wg.Done()
 			for p := range workQ {
-				_, err := r.query.qfunc(ctx, p)
-				if err == nil {
+				if fn(ctx, p) == nil {
 					resultQ <- p
 					return
 				}
@@ -211,10 +248,12 @@ func (r *dhtQueryRunner) getClosest(ctx context.Context) ([]peer.ID, error) {
 		close(resultQ)
 	}()
 
-	// No need to handle the context, assuming the _user_ does in qfunc.
+	// No need to handle the context, assuming the _user_ does in rfunc.
 
 	for len(bucket) < KValue && len(closest) > 0 {
-		if r.peersSuceeded.Contains(closest[0]) {
+		if !newQuery && succeeded[closest[0]] {
+			// no need to re-query this peer as we've already sent
+			// them this query.
 			bucket = append(bucket, closest[0])
 			closest = closest[1:]
 			continue
@@ -354,12 +393,13 @@ func (r *dhtQueryRunner) queryPeer(proc process.Process, p peer.ID) {
 		return
 	}
 
+	r.peersQueried.Add(p)
+
 	// finally, run the query against this peer
-	res, err := r.query.qfunc(ctx, p)
+	res, err := r.query.rfunc(ctx, p)
 
 	if err == nil {
 		r.aPeers.Add(p)
-		r.peersSuceeded.Add(p)
 	} else {
 		r.peersFailed.Add(p)
 	}
