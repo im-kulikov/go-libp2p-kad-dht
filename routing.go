@@ -21,6 +21,7 @@ import (
 	routing "github.com/libp2p/go-libp2p-routing"
 	notif "github.com/libp2p/go-libp2p-routing/notifications"
 	ropts "github.com/libp2p/go-libp2p-routing/options"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // asyncQueryBuffer is the size of buffered channels in async queries. This
@@ -297,7 +298,6 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, nvals int) (<-cha
 			return done(nil)
 		}
 
-		nvals--
 	} else if nvals == 0 {
 		return done(routing.ErrNotFound)
 	}
@@ -309,9 +309,6 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, nvals int) (<-cha
 		logger.Warning("No peers from routing table!")
 		return done(kb.ErrLookupFailure)
 	}
-
-	var valslock sync.Mutex
-	var got int
 
 	// setup the Query
 	parent := ctx
@@ -346,20 +343,11 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, nvals int) (<-cha
 				Val:  rec.GetValue(),
 				From: p,
 			}
-			valslock.Lock()
 			select {
 			case vals <- rv:
 			case <-ctx.Done():
-				valslock.Unlock()
 				return nil, ctx.Err()
 			}
-			got++
-
-			// If we have collected enough records, we're done
-			if nvals == got {
-				res.success = true
-			}
-			valslock.Unlock()
 		}
 
 		notif.PublishQueryEvent(parent, &notif.QueryEvent{
@@ -376,14 +364,6 @@ func (dht *IpfsDHT) getValues(ctx context.Context, key string, nvals int) (<-cha
 		defer cancel()
 
 		_, err = query.Run(reqCtx, rtp)
-
-		// We do have some values but we either ran out of peers to query or
-		// searched for a whole minute.
-		//
-		// We'll just call this a success.
-		if got > 0 && (err == routing.ErrNotFound || reqCtx.Err() == context.DeadlineExceeded) {
-			err = nil
-		}
 		done(err)
 	}()
 
@@ -475,17 +455,16 @@ func (dht *IpfsDHT) findProvidersAsyncRoutine(ctx context.Context, key cid.Cid, 
 	defer logger.EventBegin(ctx, "findProvidersAsync", key).Done()
 	defer close(peerOut)
 
-	ps := pset.NewLimited(count)
+	ps := pset.New()
 	provs := dht.providers.GetProviders(ctx, key)
 	for _, p := range provs {
 		// NOTE: Assuming that this list of peers is unique
-		if ps.TryAdd(p) {
-			pi := dht.peerstore.PeerInfo(p)
-			select {
-			case peerOut <- pi:
-			case <-ctx.Done():
-				return
-			}
+		ps.Add(p)
+		pi := dht.peerstore.PeerInfo(p)
+		select {
+		case peerOut <- pi:
+		case <-ctx.Done():
+			return
 		}
 
 		// If we have enough peers locally, don't bother with remote RPC
@@ -526,10 +505,6 @@ func (dht *IpfsDHT) findProvidersAsyncRoutine(ctx context.Context, key cid.Cid, 
 					return nil, ctx.Err()
 				}
 			}
-			if ps.Size() >= count {
-				logger.Debugf("got enough providers (%d/%d)", ps.Size(), count)
-				return &dhtQueryResult{success: true}, nil
-			}
 		}
 
 		// Give closer peers back to the query to be queried
@@ -567,7 +542,7 @@ func (dht *IpfsDHT) findProvidersAsyncRoutine(ctx context.Context, key cid.Cid, 
 }
 
 // FindPeer searches for a peer with given ID.
-func (dht *IpfsDHT) FindPeer(ctx context.Context, id peer.ID) (_ pstore.PeerInfo, err error) {
+func (dht *IpfsDHT) FindPeer(ctx context.Context, id peer.ID) (pinfo pstore.PeerInfo, err error) {
 	eip := logger.EventBegin(ctx, "FindPeer", id)
 	defer func() {
 		if err != nil {
@@ -576,23 +551,79 @@ func (dht *IpfsDHT) FindPeer(ctx context.Context, id peer.ID) (_ pstore.PeerInfo
 		eip.Done()
 	}()
 
+	pinfo.ID = id
+
+	addrs, err := dht.FindPeerAsync(ctx, id)
+	if err != nil {
+		return pinfo, err
+	}
+
+	for addr := range addrs {
+		pinfo.Addrs = append(pinfo.Addrs, addr)
+	}
+
+	if len(pinfo.Addrs) == 0 {
+		return pinfo, routing.ErrNotFound
+	}
+
+	return pinfo, nil
+}
+
+func (dht *IpfsDHT) FindPeerAsync(ctx context.Context, id peer.ID) (<-chan ma.Multiaddr, error) {
 	// Check if were already connected to them
 	if pi := dht.FindLocal(id); pi.ID != "" {
-		return pi, nil
+		addrs := make(chan ma.Multiaddr, len(pi.Addrs))
+		for _, addr := range pi.Addrs {
+			addrs <- addr
+		}
+		return addrs, nil
 	}
 
 	peers := dht.routingTable.NearestPeers(kb.ConvertPeerID(id), AlphaValue)
 	if len(peers) == 0 {
-		return pstore.PeerInfo{}, kb.ErrLookupFailure
+		return nil, kb.ErrLookupFailure
 	}
 
-	// Sanity...
-	for _, p := range peers {
-		if p == id {
-			logger.Debug("found target peer in list of closest peers...")
-			return dht.peerstore.PeerInfo(p), nil
+	out := make(chan ma.Multiaddr)
+	inp := make(chan []ma.Multiaddr)
+
+	go func(in <-chan []ma.Multiaddr) {
+		defer close(out)
+
+		seen := make(map[string]bool, 10)
+		queue := make([]ma.Multiaddr, 0, 10)
+
+		for len(queue) > 0 || inp != nil {
+			var (
+				sendCh  chan ma.Multiaddr
+				sendVal ma.Multiaddr
+			)
+			if len(queue) > 0 {
+				sendCh = out
+				sendVal = queue[len(queue)-1]
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case sendCh <- sendVal:
+				queue[len(queue)-1] = nil
+				queue = queue[:len(queue)-1]
+				logger.Error("send")
+			case addrs, ok := <-inp:
+				if !ok {
+					inp = nil
+					continue
+				}
+				for _, addr := range addrs {
+					if seen[string(addr.Bytes())] {
+						continue
+					}
+					seen[string(addr.Bytes())] = true
+					queue = append(queue, addr)
+				}
+			}
 		}
-	}
+	}(inp)
 
 	// setup the Query
 	parent := ctx
@@ -612,11 +643,12 @@ func (dht *IpfsDHT) FindPeer(ctx context.Context, id peer.ID) (_ pstore.PeerInfo
 
 		// see if we got the peer here
 		for _, npi := range clpeerInfos {
-			if npi.ID == id {
-				return &dhtQueryResult{
-					peer:    npi,
-					success: true,
-				}, nil
+			if npi.ID == id && len(npi.Addrs) > 0 {
+				select {
+				case inp <- npi.Addrs:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 			}
 		}
 
@@ -629,18 +661,12 @@ func (dht *IpfsDHT) FindPeer(ctx context.Context, id peer.ID) (_ pstore.PeerInfo
 		return &dhtQueryResult{closerPeers: clpeerInfos}, nil
 	})
 
-	// run it!
-	result, err := query.Run(ctx, peers)
-	if err != nil {
-		return pstore.PeerInfo{}, err
-	}
+	go func() {
+		defer close(inp)
+		query.Run(ctx, peers)
+	}()
 
-	logger.Debugf("FindPeer %v %v", id, result.success)
-	if result.peer.ID == "" {
-		return pstore.PeerInfo{}, routing.ErrNotFound
-	}
-
-	return *result.peer, nil
+	return out, nil
 }
 
 // FindPeersConnectedToPeer searches for peers directly connected to a given peer.

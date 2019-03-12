@@ -16,7 +16,6 @@ import (
 	pset "github.com/libp2p/go-libp2p-peer/peerset"
 	pstore "github.com/libp2p/go-libp2p-peerstore"
 	queue "github.com/libp2p/go-libp2p-peerstore/queue"
-	routing "github.com/libp2p/go-libp2p-routing"
 	notif "github.com/libp2p/go-libp2p-routing/notifications"
 )
 
@@ -30,13 +29,7 @@ type dhtQuery struct {
 }
 
 type dhtQueryResult struct {
-	value         []byte             // GetValue
-	peer          *pstore.PeerInfo   // FindPeer
-	providerPeers []pstore.PeerInfo  // GetProviders
-	closerPeers   []*pstore.PeerInfo // *
-	success       bool
-
-	finalSet []peer.ID
+	closerPeers []*pstore.PeerInfo // *
 }
 
 // constructs query
@@ -57,7 +50,7 @@ func (dht *IpfsDHT) newQuery(k string, f queryFunc) *dhtQuery {
 type queryFunc func(context.Context, peer.ID) (*dhtQueryResult, error)
 
 // Run runs the query at hand. pass in a list of peers to use first.
-func (q *dhtQuery) Run(ctx context.Context, peers []peer.ID) (*dhtQueryResult, error) {
+func (q *dhtQuery) Run(ctx context.Context, peers []peer.ID) ([]peer.ID, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -79,8 +72,7 @@ type dhtQueryRunner struct {
 	peersToQuery   *queue.ChanQueue   // peers remaining to be queried
 	peersRemaining todoctr.Counter    // peersToQuery + currently processing
 
-	result *dhtQueryResult // query result
-	errs   u.MultiErr      // result errors. maybe should be a map[peer.ID]error
+	errs u.MultiErr // result errors. maybe should be a map[peer.ID]error
 
 	rateLimit chan struct{} // processing semaphore
 	log       logging.EventLogger
@@ -118,7 +110,7 @@ func newQueryRunner(q *dhtQuery) *dhtQueryRunner {
 	return r
 }
 
-func (r *dhtQueryRunner) Run(ctx context.Context, peers []peer.ID) (*dhtQueryResult, error) {
+func (r *dhtQueryRunner) Run(ctx context.Context, peers []peer.ID) ([]peer.ID, error) {
 	r.log = logger
 	r.runCtx = ctx
 
@@ -144,21 +136,17 @@ func (r *dhtQueryRunner) Run(ctx context.Context, peers []peer.ID) (*dhtQueryRes
 
 	// so workers are working.
 
-	// wait until they're done.
-	err := routing.ErrNotFound
-
 	// now, if the context finishes, close the proc.
 	// we have to do it here because the logic before is setup, which
 	// should run without closing the proc.
 	ctxproc.CloseAfterContext(r.proc, ctx)
 
+	var err error
 	select {
 	case <-r.peersRemaining.Done():
 		r.proc.Close()
 		r.RLock()
 		defer r.RUnlock()
-
-		err = routing.ErrNotFound
 
 		// if every query to every peer failed, something must be very wrong.
 		if len(r.errs) > 0 && len(r.errs) == r.peersSeen.Size() {
@@ -172,13 +160,7 @@ func (r *dhtQueryRunner) Run(ctx context.Context, peers []peer.ID) (*dhtQueryRes
 		err = r.runCtx.Err()
 	}
 
-	if r.result != nil && r.result.success {
-		return r.result, nil
-	}
-
-	return &dhtQueryResult{
-		finalSet: r.kPeers.Peers(),
-	}, err
+	return r.kPeers.Peers(), err
 }
 
 func (r *dhtQueryRunner) addPeerToQuery(next peer.ID) {
@@ -309,15 +291,6 @@ func (r *dhtQueryRunner) queryPeer(proc process.Process, p peer.ID) {
 		r.Lock()
 		r.errs = append(r.errs, err)
 		r.Unlock()
-
-	} else if res.success {
-		logger.Debugf("SUCCESS worker for: %v %s", p, res)
-		r.Lock()
-		r.result = res
-		r.Unlock()
-		go r.proc.Close() // signal to everyone that we're done.
-		// must be async, as we're one of the children, and Close blocks.
-
 	} else if len(res.closerPeers) > 0 {
 		logger.Debugf("PEERS CLOSER -- worker for: %v (%d closer peers)", p, len(res.closerPeers))
 		for _, next := range res.closerPeers {
