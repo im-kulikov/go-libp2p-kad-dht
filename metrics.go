@@ -15,59 +15,41 @@ var (
 
 // Keys
 var (
-// TODO: figure out some appropriate keys
-// TODO: add a key for each query type to be able to tag every query made
-// KeyProtocol, _     = tag.NewKey("libp2p_protocol")
-// KeyPeerID, _       = tag.NewKey("libp2p_peer_id")
-// KeyRemotePeerID, _ = tag.NewKey("libp2p_remote_peer_id")
+	// TODO: figure out some appropriate keys
+	// TODO: add a key for each query type to be able to tag every query made
+	// KeyProtocol, _     = tag.NewKey("libp2p_protocol")
+	// KeyPeerID, _       = tag.NewKey("libp2p_peer_id")
+	// KeyRemotePeerID, _ = tag.NewKey("libp2p_remote_peer_id")
+	KeyMessageType, _ = tag.NewKey("message_type")
 )
 
 // Metrics
 var (
-	GetValueMsgReceivedCount     = stats.Int64("libp2p.io/dht/kad/get_value_msg_received_count", "Total number of GetValue messages received", stats.UnitDimensionless)
-	PutValueMsgReceivedCount     = stats.Int64("libp2p.io/dht/kad/put_value_msg_received_count", "Total number of PutValue messages received", stats.UnitDimensionless)
-	FindNodeMsgReceivedCount     = stats.Int64("libp2p.io/dht/kad/find_node_msg_received_count", "Total number of FindNode messages received", stats.UnitDimensionless)
-	AddProviderMsgReceivedCount  = stats.Int64("libp2p.io/dht/kad/add_provider_msg_received_count", "Total number of AddProvider messages received", stats.UnitDimensionless)
-	GetProvidersMsgReceivedCount = stats.Int64("libp2p.io/dht/kad/get_providers_msg_received_count", "Total number of GetProviders messages received", stats.UnitDimensionless)
-	PingMsgReceivedCount         = stats.Int64("libp2p.io/dht/kad/ping_msg_received_count", "Total number of Ping messages received", stats.UnitDimensionless)
+	ReceivedMessagesPerRPC = stats.Int64("libp2p.io/dht/kad/received_messages_per_rpc", "Total number of messages received per RPC", stats.UnitDimensionless)
+	ReceivedBytesPerRPC    = stats.Int64("libp2p.io/dht/kad/received_bytes_per_rpc", "Total received bytes per RPC", stats.UnitBytes)
+	LatencyPerRPC          = stats.Float64("libp2p.io/dht/kad/latency_per_rpc", "Latency per RPC", stats.UnitMilliseconds)
 )
 
 // Views
 var (
-	GetValueMsgReceivedCountView = &view.View{
-		Name:        "libp2p.io/dht/kad/get_value_msg_received_count",
-		Measure:     GetValueMsgReceivedCount,
-		TagKeys:     []tag.Key{},
+	ReceivedMessagesPerRPCView = &view.View{
+		Name:        "libp2p.io/dht/kad/received_messages_per_rpc",
+		Measure:     ReceivedMessagesPerRPC,
+		TagKeys:     []tag.Key{KeyMessageType},
 		Aggregation: DefaultMessageCountDistribution,
 	}
-	PutValueMsgReceivedCountView = &view.View{
-		Name:        "libp2p.io/dht/kad/put_value_msg_received_count",
-		Measure:     PutValueMsgReceivedCount,
-		TagKeys:     []tag.Key{},
-		Aggregation: DefaultMessageCountDistribution,
+
+	ReceivedBytesPerRPCView = &view.View{
+		Name:        "libp2p.io/dht/kad/received_bytes_per_rpc",
+		Measure:     ReceivedBytesPerRPC,
+		TagKeys:     []tag.Key{KeyMessageType},
+		Aggregation: DefaultBytesDistribution,
 	}
-	FindNodeMsgReceivedCountView = &view.View{
-		Name:        "libp2p.io/dht/kad/find_node_msg_received_count",
-		Measure:     FindNodeMsgReceivedCount,
-		TagKeys:     []tag.Key{},
-		Aggregation: DefaultMessageCountDistribution,
-	}
-	AddProviderMsgReceivedCountView = &view.View{
-		Name:        "libp2p.io/dht/kad/add_provider_msg_received_count",
-		Measure:     AddProviderMsgReceivedCount,
-		TagKeys:     []tag.Key{},
-		Aggregation: DefaultMessageCountDistribution,
-	}
-	GetProvidersMsgReceivedCountView = &view.View{
-		Name:        "libp2p.io/dht/kad/get_providers_msg_received_count",
-		Measure:     GetProvidersMsgReceivedCount,
-		TagKeys:     []tag.Key{},
-		Aggregation: DefaultMessageCountDistribution,
-	}
-	PingMsgReceivedCountView = &view.View{
-		Name:        "libp2p.io/dht/kad/ping_msg_received_count",
-		Measure:     PingMsgReceivedCount,
-		TagKeys:     []tag.Key{},
-		Aggregation: DefaultMessageCountDistribution,
+
+	LatencyPerRPCView = &view.View{
+		Name:        "libp2p.io/dht/kad/latency_per_rpc",
+		Measure:     LatencyPerRPC,
+		TagKeys:     []tag.Key{KeyMessageType},
+		Aggregation: DefaultMillisecondsDistribution,
 	}
 )

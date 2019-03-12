@@ -13,6 +13,8 @@ import (
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	inet "github.com/libp2p/go-libp2p-net"
 	peer "github.com/libp2p/go-libp2p-peer"
+	"go.opencensus.io/stats"
+	"go.opencensus.io/tag"
 )
 
 var dhtReadMessageTimeout = time.Minute
@@ -62,6 +64,7 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 	mPeer := s.Conn().RemotePeer()
 
 	for {
+		startTime := time.Now()
 		var req pb.Message
 		switch err := r.ReadMsg(&req); err {
 		case io.EOF:
@@ -75,6 +78,15 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 			return false
 		case nil:
 		}
+
+		stats.RecordWithTags(
+			ctx,
+			[]tag.Mutator{
+				tag.Upsert(KeyMessageType, req.GetType().String()),
+			},
+			ReceivedMessagesPerRPC.M(1),
+			ReceivedBytesPerRPC.M(int64(req.Size())),
+		)
 
 		handler := dht.handlerForMsgType(req.GetType())
 		if handler == nil {
@@ -104,6 +116,15 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 			return false
 		}
 
+		elapsedTime := time.Since(startTime)
+		latencyMillis := float64(elapsedTime) / float64(time.Millisecond)
+		stats.RecordWithTags(
+			ctx,
+			[]tag.Mutator{
+				tag.Upsert(KeyMessageType, req.GetType().String()),
+			},
+			LatencyPerRPC.M(latencyMillis),
+		)
 	}
 }
 
