@@ -17,6 +17,7 @@ import (
 	pstore "github.com/libp2p/go-libp2p-peerstore"
 	recpb "github.com/libp2p/go-libp2p-record/pb"
 	base32 "github.com/whyrusleeping/base32"
+	"go.opencensus.io/stats"
 )
 
 // The number of closer peers to send on requests.
@@ -49,6 +50,7 @@ func (dht *IpfsDHT) handleGetValue(ctx context.Context, p peer.ID, pmes *pb.Mess
 	logger.SetTag(ctx, "peer", p)
 	defer func() { logger.FinishWithErr(ctx, err) }()
 	logger.Debugf("%s handleGetValue for key: %s", dht.self, pmes.GetKey())
+	stats.Record(ctx, GetValueMsgReceivedCount.M(1))
 
 	// setup response
 	resp := pb.NewMessage(pmes.GetType(), pmes.GetKey(), pmes.GetClusterLevel())
@@ -149,6 +151,7 @@ func (dht *IpfsDHT) handlePutValue(ctx context.Context, p peer.ID, pmes *pb.Mess
 	ctx = logger.Start(ctx, "handlePutValue")
 	logger.SetTag(ctx, "peer", p)
 	defer func() { logger.FinishWithErr(ctx, err) }()
+	stats.Record(ctx, PutValueMsgReceivedCount.M(1))
 
 	rec := pmes.GetRecord()
 	if rec == nil {
@@ -234,8 +237,9 @@ func (dht *IpfsDHT) getRecordFromDatastore(dskey ds.Key) (*recpb.Record, error) 
 	return rec, nil
 }
 
-func (dht *IpfsDHT) handlePing(_ context.Context, p peer.ID, pmes *pb.Message) (*pb.Message, error) {
+func (dht *IpfsDHT) handlePing(ctx context.Context, p peer.ID, pmes *pb.Message) (*pb.Message, error) {
 	logger.Debugf("%s Responding to ping from %s!\n", dht.self, p)
+	stats.Record(ctx, PingMsgReceivedCount.M(1))
 	return pmes, nil
 }
 
@@ -243,6 +247,7 @@ func (dht *IpfsDHT) handleFindPeer(ctx context.Context, p peer.ID, pmes *pb.Mess
 	ctx = logger.Start(ctx, "handleFindPeer")
 	defer func() { logger.FinishWithErr(ctx, _err) }()
 	logger.SetTag(ctx, "peer", p)
+	stats.Record(ctx, FindNodeMsgReceivedCount.M(1))
 	resp := pb.NewMessage(pmes.GetType(), nil, pmes.GetClusterLevel())
 	var closest []peer.ID
 
@@ -293,6 +298,7 @@ func (dht *IpfsDHT) handleGetProviders(ctx context.Context, p peer.ID, pmes *pb.
 	ctx = logger.Start(ctx, "handleGetProviders")
 	defer func() { logger.FinishWithErr(ctx, _err) }()
 	logger.SetTag(ctx, "peer", p)
+	stats.Record(ctx, GetProvidersMsgReceivedCount.M(1))
 
 	resp := pb.NewMessage(pmes.GetType(), pmes.GetKey(), pmes.GetClusterLevel())
 	c, err := cid.Cast([]byte(pmes.GetKey()))
@@ -341,6 +347,7 @@ func (dht *IpfsDHT) handleAddProvider(ctx context.Context, p peer.ID, pmes *pb.M
 	ctx = logger.Start(ctx, "handleAddProvider")
 	defer func() { logger.FinishWithErr(ctx, _err) }()
 	logger.SetTag(ctx, "peer", p)
+	stats.Record(ctx, AddProviderMsgReceivedCount.M(1))
 
 	c, err := cid.Cast([]byte(pmes.GetKey()))
 	if err != nil {
