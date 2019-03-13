@@ -84,8 +84,8 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 			[]tag.Mutator{
 				tag.Upsert(KeyMessageType, req.GetType().String()),
 			},
-			ReceivedMessagesPerRPC.M(1),
-			ReceivedBytesPerRPC.M(int64(req.Size())),
+			dht.metrics.rpcReceivedMessages.M(1),
+			dht.metrics.rpcReceivedBytes.M(int64(req.Size())),
 		)
 
 		handler := dht.handlerForMsgType(req.GetType())
@@ -123,7 +123,7 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 			[]tag.Mutator{
 				tag.Upsert(KeyMessageType, req.GetType().String()),
 			},
-			LatencyPerRPC.M(latencyMillis),
+			dht.metrics.rpcLatencyMs.M(latencyMillis),
 		)
 	}
 }
