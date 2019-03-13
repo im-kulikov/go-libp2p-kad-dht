@@ -171,6 +171,12 @@
       "hash": "QmW1UQYrsBotoorzgBcQ3HVj5RzZUzB6g1vQwnNfUuCVdN",
       "name": "xerrors",
       "version": "0.0.2"
+    },
+    {
+      "author": "hsanjuan",
+      "hash": "QmNVpHFt7QmabuVQyguf8AbkLDZoFh7ifBYztqijYT1Sd2",
+      "name": "go.opencensus.io",
+      "version": "0.19.0"
     }
   ],
   "gxVersion": "0.4.0",

@@ -58,6 +58,13 @@ func (dht *IpfsDHT) handleNewStream(s inet.Stream) {
 // Returns true on orderly completion of writes (so we can Close the stream).
 func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 	ctx := dht.Context()
+	ctx, _ = tag.New(
+		ctx,
+		tag.Upsert(metrics.KeyPeerID, dht.self.Pretty()),
+		tag.Upsert(metrics.KeyRemoteID, s.Conn().RemotePeer().Pretty()),
+		tag.Upsert(metrics.KeyInstanceID, fmt.Sprintf("%p", dht)),
+	) // ignoring error as it is unrelated to the actual function of this code.
+
 	cr := ctxio.NewReader(ctx, s) // ok to use. we defer close stream in this func
 	cw := ctxio.NewWriter(ctx, s) // ok to use. we defer close stream in this func
 	r := ggio.NewDelimitedReader(cr, inet.MessageSizeMax)
@@ -119,13 +126,7 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 
 		elapsedTime := time.Since(startTime)
 		latencyMillis := float64(elapsedTime) / float64(time.Millisecond)
-		stats.RecordWithTags(
-			ctx,
-			[]tag.Mutator{
-				tag.Upsert(metrics.KeyMessageType, req.GetType().String()),
-			},
-			metrics.MRpcLatencyMs.M(latencyMillis),
-		)
+		stats.Record(ctx, metrics.MRpcLatencyMs.M(latencyMillis))
 	}
 }
 
