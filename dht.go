@@ -64,8 +64,6 @@ type IpfsDHT struct {
 	plk sync.Mutex
 
 	protocols []protocol.ID // DHT protocols
-
-	metrics NodeMetrics
 }
 
 // Assert that IPFS assumptions about interfaces aren't broken. These aren't a
@@ -151,7 +149,6 @@ func makeDHT(ctx context.Context, h host.Host, dstore ds.Batching, protocols []p
 		birth:        time.Now(),
 		routingTable: rt,
 		protocols:    protocols,
-		metrics:      newNodeMetrics(),
 	}
 }
 
@@ -428,8 +425,4 @@ func (dht *IpfsDHT) Ping(ctx context.Context, p peer.ID) error {
 		return xerrors.Errorf("got unexpected response type: %v", resp.Type)
 	}
 	return nil
-}
-
-func (dht *IpfsDHT) GetMetrics() NodeMetrics {
-	return dht.metrics
 }

@@ -10,6 +10,7 @@ import (
 
 	ggio "github.com/gogo/protobuf/io"
 	ctxio "github.com/jbenet/go-context/io"
+	"github.com/libp2p/go-libp2p-kad-dht/metrics"
 	pb "github.com/libp2p/go-libp2p-kad-dht/pb"
 	inet "github.com/libp2p/go-libp2p-net"
 	peer "github.com/libp2p/go-libp2p-peer"
@@ -82,10 +83,10 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 		stats.RecordWithTags(
 			ctx,
 			[]tag.Mutator{
-				tag.Upsert(KeyMessageType, req.GetType().String()),
+				tag.Upsert(metrics.KeyMessageType, req.GetType().String()),
 			},
-			dht.metrics.rpcReceivedMessages.M(1),
-			dht.metrics.rpcReceivedBytes.M(int64(req.Size())),
+			metrics.MRpcReceivedMessages.M(1),
+			metrics.MRpcReceivedBytes.M(int64(req.Size())),
 		)
 
 		handler := dht.handlerForMsgType(req.GetType())
@@ -121,9 +122,9 @@ func (dht *IpfsDHT) handleNewMessage(s inet.Stream) bool {
 		stats.RecordWithTags(
 			ctx,
 			[]tag.Mutator{
-				tag.Upsert(KeyMessageType, req.GetType().String()),
+				tag.Upsert(metrics.KeyMessageType, req.GetType().String()),
 			},
-			dht.metrics.rpcLatencyMs.M(latencyMillis),
+			metrics.MRpcLatencyMs.M(latencyMillis),
 		)
 	}
 }
